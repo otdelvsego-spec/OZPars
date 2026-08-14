@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ozpriceanalyzer"
-version = "0.1.0"
-description = "Excel-based Ozon price analyzer using public storefront pages"
+version = "0.2.0"
+description = "Desktop Ozon analogue and price analyzer using public storefront pages"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
