@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Mapping
 
-from .models import ProductCharacteristics
+from .models import MatchingSettings, ProductCharacteristics
 
 _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
 _WORD_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
@@ -14,10 +14,6 @@ _PACKAGE_RE = re.compile(
     re.IGNORECASE,
 )
 _COMPARABLE_MATERIALS = frozenset({"лдсп", "пластик"})
-_MIN_MATERIAL_SIMILARITY = 0.65
-_MIN_TOTAL_SIMILARITY = 0.65
-_MAX_DIMENSION_DIFFERENCE = 0.60
-_MAX_WEIGHT_DIFFERENCE = 0.80
 
 _MATERIAL_ALIASES = {
     "дсп": "лдсп",
@@ -35,14 +31,28 @@ _MATERIAL_ALIASES = {
     "полиэтилен": "пластик",
 }
 
-REJECTION_LABELS = {
-    "missing_materials": "нет ЛДСП или пластика",
-    "materials_below_threshold": "материалы ниже 65%",
-    "dimensions_too_far": "габариты отличаются более чем на 60%",
-    "weight_too_far": "вес отличается более чем на 80%",
-    "insufficient_data": "нет сравнимых габаритов и веса",
-    "total_below_threshold": "итоговое сходство ниже 65%",
-}
+
+def rejection_labels(settings: MatchingSettings | None = None) -> dict[str, str]:
+    rules = settings or MatchingSettings()
+    return {
+        "excluded": "артикул в справочнике исключений",
+        "missing_materials": "нет ЛДСП или пластика",
+        "materials_below_threshold": f"материалы ниже {rules.material_similarity:.0%}",
+        "dimensions_too_far": (
+            f"габариты отличаются более чем на {rules.max_dimension_difference:.0%}"
+        ),
+        "not_enough_dimensions": (
+            f"меньше {rules.min_dimension_count} сопоставимых габаритов"
+        ),
+        "weight_too_far": f"вес отличается более чем на {rules.max_weight_difference:.0%}",
+        "insufficient_data": "недостаточно сравнимых характеристик",
+        "total_below_threshold": f"итоговое сходство ниже {rules.overall_similarity:.0%}",
+        "rating_below_threshold": f"рейтинг ниже {rules.min_rating:g}",
+        "feedbacks_below_threshold": f"отзывов меньше {rules.min_feedbacks}",
+    }
+
+
+REJECTION_LABELS = rejection_labels()
 
 
 def extract_characteristics(raw: Mapping[str, str]) -> ProductCharacteristics:
@@ -95,49 +105,60 @@ def extract_characteristics(raw: Mapping[str, str]) -> ProductCharacteristics:
 def evaluate_similarity(
     source: ProductCharacteristics,
     candidate: ProductCharacteristics,
+    settings: MatchingSettings | None = None,
 ) -> tuple[float | None, tuple[str, ...], str]:
+    rules = settings or MatchingSettings()
+    rules.validate()
+
     source_materials = _comparison_materials(source.materials)
     candidate_materials = _comparison_materials(candidate.materials)
     if not source_materials or not candidate_materials:
         return None, (), "missing_materials"
 
     material_score = _dice_similarity(source_materials, candidate_materials)
-    if material_score < _MIN_MATERIAL_SIMILARITY:
+    if material_score < rules.material_similarity:
         return None, (), "materials_below_threshold"
 
     weighted: list[tuple[float, float, str]] = [
-        (material_score, 0.40, f"материалы {material_score:.0%}")
+        (material_score, rules.material_weight, f"материалы {material_score:.0%}")
     ]
 
-    dimension_score = _dimension_similarity(source, candidate)
-    if dimension_score == -1:
-        return None, (), "dimensions_too_far"
-    if dimension_score is not None:
-        weighted.append((dimension_score, 0.45, "габариты"))
+    dimension_score, dimension_reason = _dimension_similarity(source, candidate, rules)
+    if dimension_reason:
+        return None, (), dimension_reason
+    if dimension_score is not None and rules.dimensions_weight > 0:
+        weighted.append((dimension_score, rules.dimensions_weight, "габариты"))
 
     if source.weight_kg is not None and candidate.weight_kg is not None:
         difference = _relative_difference(source.weight_kg, candidate.weight_kg)
-        if difference > _MAX_WEIGHT_DIFFERENCE:
+        if difference > rules.max_weight_difference:
             return None, (), "weight_too_far"
-        weighted.append(
-            (max(0.0, 1.0 - difference / _MAX_WEIGHT_DIFFERENCE), 0.15, "вес")
-        )
+        if rules.weight_weight > 0:
+            weighted.append(
+                (
+                    max(0.0, 1.0 - difference / max(rules.max_weight_difference, 1e-9)),
+                    rules.weight_weight,
+                    "вес",
+                )
+            )
 
-    if len(weighted) == 1:
+    positive_weighted = [item for item in weighted if item[1] > 0]
+    if len(positive_weighted) == 1:
         return None, (), "insufficient_data"
 
-    total_weight = sum(weight for _, weight, _ in weighted)
-    score = sum(value * weight for value, weight, _ in weighted) / total_weight
-    if score < _MIN_TOTAL_SIMILARITY:
+    total_weight = sum(weight for _, weight, _ in positive_weighted)
+    score = sum(value * weight for value, weight, _ in positive_weighted) / total_weight
+    if score < rules.overall_similarity:
         return None, (), "total_below_threshold"
-    return round(score, 4), tuple(label for _, _, label in weighted), ""
+    return round(score, 4), tuple(label for _, _, label in positive_weighted), ""
 
 
 def similarity(
     source: ProductCharacteristics,
     candidate: ProductCharacteristics,
+    settings: MatchingSettings | None = None,
 ) -> tuple[float | None, tuple[str, ...]]:
-    score, fields, _ = evaluate_similarity(source, candidate)
+    score, fields, _ = evaluate_similarity(source, candidate, settings)
     return score, fields
 
 
@@ -154,7 +175,8 @@ def format_materials(characteristics: ProductCharacteristics) -> str:
 def _dimension_similarity(
     source: ProductCharacteristics,
     candidate: ProductCharacteristics,
-) -> float | None:
+    rules: MatchingSettings,
+) -> tuple[float | None, str]:
     source_item = _dimension_values(source.dimensions_cm, package=False)
     candidate_item = _dimension_values(candidate.dimensions_cm, package=False)
     source_package = _dimension_values(source.dimensions_cm, package=True)
@@ -162,17 +184,26 @@ def _dimension_similarity(
 
     pairs: list[tuple[float, float]] = []
     if source_item and candidate_item:
-        pairs = list(zip(sorted(source_item), sorted(candidate_item)))
-    elif source_package and candidate_package:
-        pairs = list(zip(sorted(source_package), sorted(candidate_package)))
+        count = min(len(source_item), len(candidate_item), 3)
+        if count < rules.min_dimension_count:
+            return None, "not_enough_dimensions"
+        pairs = list(zip(sorted(source_item)[:count], sorted(candidate_item)[:count]))
+    elif rules.use_package_dimensions and source_package and candidate_package:
+        count = min(len(source_package), len(candidate_package), 3)
+        if count < rules.min_dimension_count:
+            return None, "not_enough_dimensions"
+        pairs = list(zip(sorted(source_package)[:count], sorted(candidate_package)[:count]))
     if not pairs:
-        return None
+        return None, ""
 
     differences = [_relative_difference(first, second) for first, second in pairs]
     mean_difference = sum(differences) / len(differences)
-    if mean_difference > _MAX_DIMENSION_DIFFERENCE:
-        return -1
-    return max(0.0, 1.0 - mean_difference / _MAX_DIMENSION_DIFFERENCE)
+    if mean_difference > rules.max_dimension_difference:
+        return None, "dimensions_too_far"
+    return (
+        max(0.0, 1.0 - mean_difference / max(rules.max_dimension_difference, 1e-9)),
+        "",
+    )
 
 
 def _dimension_values(dimensions: Mapping[str, float], package: bool) -> list[float]:
