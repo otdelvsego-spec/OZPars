@@ -14,6 +14,49 @@ class Product:
 
 
 @dataclass(slots=True)
+class MatchingSettings:
+    """User-configurable analogue matching rules."""
+
+    overall_similarity: float = 0.65
+    material_similarity: float = 0.65
+    max_dimension_difference: float = 0.60
+    max_weight_difference: float = 0.80
+    material_weight: float = 0.40
+    dimensions_weight: float = 0.45
+    weight_weight: float = 0.15
+    strict_category: bool = True
+    min_rating: float = 0.0
+    min_feedbacks: int = 0
+    min_dimension_count: int = 2
+    use_package_dimensions: bool = True
+    price_basis: str = "current"
+    market_tolerance: float = 0.05
+
+    def validate(self) -> None:
+        for label, value in (
+            ("Общее сходство", self.overall_similarity),
+            ("Сходство материалов", self.material_similarity),
+            ("Отклонение габаритов", self.max_dimension_difference),
+            ("Отклонение веса", self.max_weight_difference),
+            ("Граница рынка", self.market_tolerance),
+        ):
+            if not 0 <= value <= 1:
+                raise ValueError(f"{label} должно быть от 0 до 100%.")
+        if self.material_weight < 0 or self.dimensions_weight < 0 or self.weight_weight < 0:
+            raise ValueError("Вес параметров сходства не может быть отрицательным.")
+        if self.material_weight + self.dimensions_weight + self.weight_weight <= 0:
+            raise ValueError("Хотя бы один вес параметра сходства должен быть больше нуля.")
+        if self.min_rating < 0 or self.min_rating > 5:
+            raise ValueError("Минимальный рейтинг должен быть от 0 до 5.")
+        if self.min_feedbacks < 0:
+            raise ValueError("Минимальное число отзывов не может быть отрицательным.")
+        if self.min_dimension_count < 1 or self.min_dimension_count > 3:
+            raise ValueError("Число сопоставимых габаритов должно быть от 1 до 3.")
+        if self.price_basis not in {"current", "without_card", "ozon_card"}:
+            raise ValueError("Неизвестный тип цены для рыночного сравнения.")
+
+
+@dataclass(slots=True)
 class ProductCharacteristics:
     dimensions_cm: dict[str, float] = field(default_factory=dict)
     weight_kg: float | None = None
@@ -41,6 +84,7 @@ class MarketProduct:
     similarity_score: float | None = None
     matched_fields: tuple[str, ...] = ()
     url: str = ""
+    comparison_price: float | None = None
 
 
 @dataclass(slots=True)
@@ -55,6 +99,7 @@ class PriceResult:
     ozon_card_price: float | None = None
     price_without_card: float | None = None
     old_price: float | None = None
+    comparison_price: float | None = None
     target_price: float | None = None
     target_difference: float | None = None
     target_reached: bool | None = None
