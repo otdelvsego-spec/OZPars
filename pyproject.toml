@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ozpriceanalyzer"
+version = "0.1.0"
+description = "Excel-based Ozon price analyzer using public storefront pages"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.2,<3.0",
+    "openpyxl>=3.1,<4.0",
+    "requests>=2.32,<3.0",
+    "beautifulsoup4>=4.12,<5.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+build = ["pyinstaller>=6,<7"]
+
+[project.scripts]
+oz-analyzer = "ozpriceanalyzer.main:main"
+oz-analyzer-gui = "ozpriceanalyzer.desktop:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
